@@ -1,9 +1,7 @@
 from datetime import date, datetime, timezone
-from os import path
 
 import dateutil.parser
 import requests
-import yaml
 from beancount.core import amount, data
 from beancount.core.number import D
 from beancount.ingest import importer
@@ -13,17 +11,17 @@ from dateutil.relativedelta import relativedelta
 class Importer(importer.ImporterProtocol):
     """An importer for Transferwise using the API."""
 
+    def __init__(self, account: str, api_token: str):
+        self.baseAccount = account
+        self.token = api_token
+
     def identify(self, file):
-        return "transferwise.yaml" == path.basename(file.name)
+        return True
 
     def file_account(self, file):
-        return ""
+        return "web"
 
-    def extract(self, file, existing_entries):
-        with open(file.name, "r") as f:
-            config = yaml.safe_load(f)
-        token = config["token"]
-        baseAccount = config["baseAccount"]
+    def extract(self, file, existing_entries=None):
         startDate = datetime.combine(
             date.today() + relativedelta(months=-3), datetime.min.time(), timezone.utc
         ).isoformat()
@@ -31,7 +29,7 @@ class Importer(importer.ImporterProtocol):
             date.today(), datetime.max.time(), timezone.utc
         ).isoformat()
 
-        headers = {"Authorization": "Bearer " + token}
+        headers = {"Authorization": "Bearer " + self.token}
         r = requests.get("https://api.transferwise.com/v1/profiles", headers=headers)
         profiles = r.json()
         profileId = profiles[0]["id"]
@@ -74,7 +72,7 @@ class Importer(importer.ImporterProtocol):
                     data.EMPTY_SET,
                     [
                         data.Posting(
-                            baseAccount + accountCcy,
+                            self.baseAccount + accountCcy,
                             amount.Amount(
                                 D(str(transaction["amount"]["value"])),
                                 transaction["amount"]["currency"],
