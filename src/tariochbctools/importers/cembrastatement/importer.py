@@ -1,11 +1,85 @@
 import re
 from datetime import datetime, timedelta
+from dateutil.parser import parse
+from pathlib import Path
+import csv
 
 import camelot
 from beancount.core import amount, data
 from beancount.core.number import D
 from beancount.ingest import importer
 from beancount.ingest.importers.mixins import identifier
+
+
+def cleanDecimal(formatted_number):
+    return D(formatted_number.replace("'", ""))
+
+
+def parse_pdf_to_csv(pdf_file_name, csv_file_name):
+    transactions = []
+    tables = camelot.read_pdf(
+        pdf_file_name, pages="2-end", flavor="stream", table_areas=["50,700,560,50"]
+    )
+
+    balance_date = None
+    balance_amount = None
+
+    for table in tables:
+        df = table.df
+
+        # skip incompatible tables
+        if df.columns.size != 5:
+            continue
+
+        for index, row in df.iterrows():
+
+            trx_date, book_date, text, credit, debit = tuple(row)
+            trx_date, book_date, text, credit, debit = (
+                trx_date.strip(),
+                book_date.strip(),
+                text.strip(),
+                credit.strip(),
+                debit.strip(),
+            )
+
+            # Transaction entry
+            try:
+                book_date = datetime.strptime(book_date, "%d.%m.%Y").date()
+            except Exception:
+                book_date = None
+
+            if book_date:
+                value = - cleanDecimal(debit) if debit else cleanDecimal(credit)
+                if amount:
+                    transactions.append([book_date, value, text])
+                continue
+
+            # Balance entry
+            try:
+                balance_date = re.search(
+                    r"Saldo per (\d\d\.\d\d\.\d\d\d\d) zu unseren Gunsten CHF", text
+                ).group(1)
+                balance_date = datetime.strptime(balance_date, "%d.%m.%Y").date()
+                # add 1 day: cembra provides balance at EOD, but beancount checks it at SOD
+                balance_date = balance_date + timedelta(days=1)
+            except Exception:
+                pass
+
+            if balance_date:
+                balance_amount = cleanDecimal(debit) if debit else - cleanDecimal(credit)
+
+    # Write to CSV file
+    with open(csv_file_name, 'wt') as f:
+        # Header
+        f.write('Date;Amount;Description\n')
+
+        # Balance
+        if balance_date is not None and balance_amount is not None:
+            f.write('{};{};BALANCE\n'.format(balance_date, balance_amount))
+
+        # Transactions
+        for transaction in transactions:
+            f.write('{};{};{}\n'.format(*transaction))
 
 
 class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
@@ -19,85 +93,48 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
     def file_account(self, file):
         return self.account
 
-    def createEntry(self, file, date, amt, text):
-        meta = data.new_metadata(file.name, 0)
-        return data.Transaction(
-            meta,
-            date,
-            "*",
-            "",
-            text,
-            data.EMPTY_SET,
-            data.EMPTY_SET,
-            [
-                data.Posting(self.account, amt, None, None, None, None),
-            ],
-        )
-
-    def createBalanceEntry(self, file, date, amt):
-        meta = data.new_metadata(file.name, 0)
-        return data.Balance(meta, date, self.account, amt, None, None)
-
-    def extract(self, file, existing_entries):
+    def extract(self, file, existing_entries=None):
         entries = []
 
-        tables = camelot.read_pdf(
-            file.name, pages="2-end", flavor="stream", table_areas=["50,700,560,50"]
-        )
-        for table in tables:
-            df = table.df
+        # Parse the PDF to a CSV file
+        csv_file = Path(file.name).with_suffix('.csv')
+        if not csv_file.is_file():
+            parse_pdf_to_csv(file.name, str(csv_file))
 
-            # skip incompatible tables
-            if df.columns.size != 5:
-                continue
+        # Read the CSV file
+        with open(str(csv_file), 'r') as csvfile:
+            reader = csv.reader(
+                csvfile,
+                delimiter=";"
+            )
+            rows = list(reader)
 
-            for index, row in df.iterrows():
+        # Balance
+        entries.append(data.Balance(
+            data.new_metadata(file.name, 0),
+            parse(rows[1][0].strip(), dayfirst=False).date(),
+            self.account,
+            amount.Amount(-D(rows[1][1]), self.currency),
+            None,
+            None
+        ))
 
-                trx_date, book_date, text, credit, debit = tuple(row)
-                trx_date, book_date, text, credit, debit = (
-                    trx_date.strip(),
-                    book_date.strip(),
-                    text.strip(),
-                    credit.strip(),
-                    debit.strip(),
-                )
-
-                # Transaction entry
-                try:
-                    book_date = datetime.strptime(book_date, "%d.%m.%Y").date()
-                except Exception:
-                    book_date = None
-
-                if book_date:
-                    amount = self.getAmount(debit, credit)
-
-                    if amount:
-                        entries.append(self.createEntry(file, book_date, amount, text))
-                    continue
-
-                # Balance entry
-                try:
-                    book_date = re.search(
-                        r"Saldo per (\d\d\.\d\d\.\d\d\d\d) zu unseren Gunsten CHF", text
-                    ).group(1)
-                    book_date = datetime.strptime(book_date, "%d.%m.%Y").date()
-                    # add 1 day: cembra provides balance at EOD, but beancount checks it at SOD
-                    book_date = book_date + timedelta(days=1)
-                except Exception:
-                    book_date = None
-
-                if book_date:
-                    amount = self.getAmount(debit, credit)
-
-                    if amount:
-                        entries.append(self.createBalanceEntry(file, book_date, amount))
+        # Transactions
+        for row in rows[2:]:
+            date = parse(row[0].strip(), dayfirst=False).date()
+            cash_flow = D(row[1])
+            desc = row[2]
+            meta = data.new_metadata(file.name, 0)
+            # meta['document'] = Path(file.name).name
+            entries.append(data.Transaction(
+                meta,
+                date,
+                "*",
+                "",
+                desc,
+                data.EMPTY_SET,
+                data.EMPTY_SET,
+                [data.Posting(self.account, amount.Amount(D(cash_flow), self.currency), None, None, None, None)],
+            ))
 
         return entries
-
-    def cleanDecimal(self, formattedNumber):
-        return D(formattedNumber.replace("'", ""))
-
-    def getAmount(self, debit, credit):
-        amt = -self.cleanDecimal(debit) if debit else self.cleanDecimal(credit)
-        if amt:
-            return amount.Amount(amt, self.currency)
