@@ -13,9 +13,10 @@ from dateutil.parser import parse
 class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
     """An importer for Revolut CSV files."""
 
-    def __init__(self, regexps, account, currency):
+    def __init__(self, regexps, account, fee_account, currency):
         identifier.IdentifyMixin.__init__(self, matchers=[("filename", regexps)])
         self.account = account
+        self.fee_account = fee_account
         self.currency = currency
 
     def name(self):
@@ -24,8 +25,9 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
     def file_account(self, file):
         return self.account
 
-    def extract(self, file, existing_entries):
+    def extract(self, file, existing_entries=None):
         entries = []
+        has_balance = False
 
         with StringIO(file.contents()) as csvfile:
             reader = csv.DictReader(
@@ -33,53 +35,52 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                 [
                     "Type",
                     "Product",
-                    "Started Date",
-                    "Completed Date",
+                    "StartedDate",
+                    "CompletedDate",
                     "Description",
                     "Amount",
                     "Fee",
                     "Currency",
                     "State",
-                    "Balance",
+                    "Balance"
                 ],
                 delimiter=",",
                 skipinitialspace=True,
             )
             next(reader)
-            for row in reader:
-                metakv = {}
-
+            for index, row in enumerate(reader):
                 try:
-                    bal = D(row["Balance"].replace("'", "").strip())
-                    amount_raw = D(row["Amount"].replace("'", "").strip())
-                    amt = amount.Amount(amount_raw, row["Currency"])
-                    balance = amount.Amount(bal, self.currency)
-                    book_date = parse(row["Completed Date"].strip()).date()
+                    meta = data.new_metadata(file.name, index)
+                    book_date = parse(row['StartedDate'].strip()).date()
+                    description = row["Type"].strip() + ' ' + row["Description"].strip()
+                    cash_flow = amount.Amount(D(row["Amount"]) - D(row["Fee"]), row["Currency"])
+
+                    # Process entry
+                    entry = data.Transaction(
+                        meta,
+                        book_date,
+                        "*",
+                        "",
+                        description,
+                        data.EMPTY_SET,
+                        data.EMPTY_SET,
+                        [data.Posting(self.account, cash_flow, None, None, None, None)],
+                    )
+                    entries.append(entry)
+
+                    # Update balance
+                    balance = data.Balance(
+                        meta,
+                        book_date + timedelta(days=1),
+                        self.account,
+                        amount.Amount(D(row["Balance"]), self.currency),
+                        None,
+                        None
+                    )
+
                 except Exception as e:
                     logging.warning(e)
                     continue
-
-                meta = data.new_metadata(file.name, 0, metakv)
-                entry = data.Transaction(
-                    meta,
-                    book_date,
-                    "*",
-                    "",
-                    row["Description"].strip(),
-                    data.EMPTY_SET,
-                    data.EMPTY_SET,
-                    [
-                        data.Posting(self.account, amt, None, None, None, None),
-                    ],
-                )
-                entries.append(entry)
-
-            # only add balance after the last (newest) transaction
-            try:
-                book_date = book_date + timedelta(days=1)
-                entry = data.Balance(meta, book_date, self.account, balance, None, None)
-                entries.append(entry)
-            except NameError:
-                pass
-
+        # Append balance
+        # entries.append(balance)
         return entries
