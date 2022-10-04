@@ -48,12 +48,14 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                 skipinitialspace=True,
             )
             next(reader)
-            for index, row in enumerate(reader):
+            for row in reader:
                 try:
-                    meta = data.new_metadata(file.name, index)
+                    meta = data.new_metadata(file.name, reader.line_num)
                     book_date = parse(row['StartedDate'].strip()).date()
                     description = row["Type"].strip() + ' ' + row["Description"].strip()
                     cash_flow = amount.Amount(D(row["Amount"]) - D(row["Fee"]), row["Currency"])
+                    if cash_flow[0] == D(0):
+                        continue
 
                     # Process entry
                     entry = data.Transaction(
