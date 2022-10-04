@@ -71,7 +71,6 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                     file.name,
                     group.first_valid_index
                 )
-                meta['document'] = basename(file.name)
                 description = 'Purchase'
 
                 # Postings details
