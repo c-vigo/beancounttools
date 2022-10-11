@@ -1,16 +1,30 @@
+import logging
+import datetime
 import re
 from os import path
+from typing import List, Dict
+from collections import OrderedDict
+import copy
 
 import yaml
-from beancount.core import amount, data
+from beancount.core import amount, data, position
 from beancount.core.number import D
 from beancount.ingest import importer
 from beancount.parser import options
 from beancount.query import query
+from beancount.ingest.importers.mixins import identifier
 from ibflex import Types, client, parser
 from ibflex.enums import CashAction
+from csv import DictReader
+from dateutil.parser import parse
 
 from tariochbctools.importers.general.priceLookup import PriceLookup
+
+cash_commodities = [
+    'CHF',
+    'USD',
+    'EUR'
+]
 
 
 class Importer(importer.ImporterProtocol):
@@ -208,3 +222,393 @@ class Importer(importer.ImporterProtocol):
     def getIncomeAccount(self, assetAccount, asset):
         parts = assetAccount.split(":")
         return "Income:" + parts[1] + ":Interest"
+
+
+class CsvImporter(identifier.IdentifyMixin, importer.ImporterProtocol):
+    """An importer for Interactive Brokers Flex Query CSV files."""
+
+    def __init__(self, regexps, parent_account, income_account, tax_account, fees_account):
+        identifier.IdentifyMixin.__init__(self, matchers=[("filename", regexps)])
+        self.parent_account = parent_account
+        self.income_account = income_account
+        self.cash_account = parent_account + ':Cash'
+        self.interests_account = income_account + ':Interests'
+        self.tax_account = tax_account
+        self.fees_account = fees_account
+
+    def name(self):
+        return super().name() + self.parent_account
+
+    def file_account(self, file):
+        return self.parent_account
+
+    def extract(self, file, existing_entries=None):
+        entries = []
+        withholding_taxes = []
+
+        with open(file.name, 'r', encoding='utf8') as csvfile:
+            reader = DictReader(
+                csvfile,
+                fieldnames=[
+                    "Id",
+                    "Date",
+                    "Type",
+                    "Currency",
+                    "Proceeds",
+                    "Security",
+                    "Amount",
+                    "CostBasis",
+                    "TradePrice",
+                    "Commission",
+                    "CommissionCurrency",
+                ],
+                delimiter=","
+            )
+            for row in reader:
+                # Parse
+                category = row['Type']
+                book_date = parse(row["Date"].strip()).date()
+                meta = data.new_metadata(file.name, reader.line_num)
+                meta['document'] = '{}-12-31-InteractiveBrokers_ActivityReport.pdf'.format(book_date.year)
+                meta['trans_id'] = row['Id']
+                cashFlow = amount.Amount(D(row["Proceeds"]), row["Currency"])
+                security = row["Security"]
+
+                # Deposits and withdrawals
+                if category == 'Deposits/Withdrawals':
+                    entries.append(data.Transaction(
+                        meta,
+                        book_date,
+                        "*",
+                        "Interactive Brokers",
+                        "Deposit" if cashFlow[0] > 0 else "Withdrawal",
+                        data.EMPTY_SET,
+                        data.EMPTY_SET,
+                        [data.Posting(self.cash_account, cashFlow, None, None, None, None)],
+                    ))
+
+                # Dividends
+                elif category == 'Dividends':
+                    dividend_account = self.income_account + ':' + security + ':Dividends'
+                    entries.append(data.Transaction(
+                        meta,
+                        book_date,
+                        "*",
+                        "Interactive Brokers",
+                        "Dividends {}".format(security),
+                        data.EMPTY_SET,
+                        data.EMPTY_SET,
+                        [
+                            data.Posting(self.cash_account, cashFlow, None, None, None, None),
+                            data.Posting(dividend_account, -cashFlow, None, None, None, None)
+                        ],
+                    ))
+
+                # Withholding tax
+                elif category == 'Withholding Tax':
+                    withholding_taxes.append([
+                        security,
+                        book_date,
+                        cashFlow,
+                        False
+                    ])
+
+                # Interests
+                elif category == 'Broker Interest Received':
+                    entries.append(data.Transaction(
+                        meta,
+                        book_date,
+                        "*",
+                        "Interactive Brokers",
+                        "Interests",
+                        data.EMPTY_SET,
+                        data.EMPTY_SET,
+                        [
+                            data.Posting(self.cash_account, cashFlow, None, None, None, None),
+                            data.Posting(self.interests_account, -cashFlow, None, None, None, None)
+                        ],
+                    ))
+
+                # FX Exchange
+                elif category in ['BUY', 'SELL'] and '.' in security:
+                    commission = amount.Amount(D(row["Commission"]), row["CommissionCurrency"])
+                    fx_orig = amount.Amount(D(row["Amount"]), row["Security"][:3])
+                    fx_dest = amount.Amount(D(row["Proceeds"]), row["Security"][4:])
+                    fx_rate = amount.Amount(D(row["TradePrice"]), row["Security"][4:])
+                    postings = [
+                            data.Posting(self.cash_account, fx_orig, None, fx_rate, None, None),
+                            data.Posting(self.cash_account, fx_dest, None, None, None, None),
+                    ]
+                    if commission[0] != 0:
+                        postings.append(data.Posting(self.cash_account, commission, None, None, None, None))
+                        postings.append(data.Posting(self.fees_account, -commission, None, None, None, None))
+                    entries.append(data.Transaction(
+                        meta,
+                        book_date,
+                        "*",
+                        "Interactive Brokers",
+                        "FX Exchange {}".format(row["Security"]),
+                        data.EMPTY_SET,
+                        data.EMPTY_SET,
+                        postings
+                    ))
+
+                # Trade: buy
+                elif category == 'BUY':
+                    # Parse more fields
+                    commission = amount.Amount(D(row["Commission"]), row["CommissionCurrency"])
+                    shares = amount.Amount(D(row["Amount"]), security)
+                    cost_per_share = position.Cost(D(row["TradePrice"]), row["Currency"], book_date, None)
+                    proceeds = amount.Amount(D(row["Proceeds"]) + D(row["Commission"]), row["Currency"])
+                    security_account = self.parent_account + ':' + security
+
+                    postings = [
+                            data.Posting(self.cash_account, proceeds, None, None, None, None),
+                            data.Posting(security_account, shares, cost_per_share, None, None, None),
+                            data.Posting(self.fees_account, -commission, None, None, None, None)
+                    ]
+
+                    entries.append(data.Transaction(
+                        meta,
+                        book_date,
+                        "*",
+                        "Interactive Brokers",
+                        "Buy {}".format(row["Security"]),
+                        data.EMPTY_SET,
+                        data.EMPTY_SET,
+                        postings
+                    ))
+
+                # Trade: sell
+                elif category == 'SELL':
+                    shares = amount.Amount(D(row["Amount"]), security)
+                    price = amount.Amount(D(row["TradePrice"]), row["Currency"])
+                    commission = amount.Amount(D(row["Commission"]), row["CommissionCurrency"])
+
+                    entries.append(data.Transaction(
+                        meta,
+                        book_date,
+                        "*",
+                        "Interactive Brokers",
+                        "Sell {}".format(row["Security"]),
+                        data.EMPTY_SET,
+                        data.EMPTY_SET,
+                        self.build_fifo_postings(
+                            existing_entries + entries,
+                            meta['trans_id'],
+                            book_date,
+                            shares,
+                            cashFlow,
+                            price,
+                            commission
+                        ),
+                    ))
+
+                # Unrecognized transaction
+                else:
+                    logging.warning(
+                        'File {}: unsupported transaction of type {} on {}'.format(
+                            file.name,
+                            category,
+                            row['Date']
+                    ))
+
+        # Append withholding taxes
+        for index, entry in enumerate(entries):
+            # It is a transaction
+            if not isinstance(entry, data.Transaction):
+                continue
+            entry: data.Transaction = entry
+
+            # It is a dividend transaction
+            if "Dividends" not in entry.narration:
+                continue
+
+            # Get date and security
+            date = entry.date
+            security = entry.narration.replace('Dividends ', '')
+
+            # Find withholding tax
+            for index2, tax in enumerate(withholding_taxes):
+                # Match
+                if tax[0] != security or tax[1] != date:
+                    continue
+
+                # Double processing?
+                if tax[3]:
+                    raise Warning('Double match withholding tax for {} on {}'.format(security, date))
+                else:
+                    withholding_taxes[index2][3] = True
+
+                # Build new postings
+                total_cash_flow = data.Amount(D(tax[2][0] + entry.postings[0].units[0]), tax[2][1])
+                entries[index] = data.Transaction(
+                    entry.meta,
+                    entry.date,
+                    entry.flag,
+                    entry.payee,
+                    entry.narration,
+                    entry.tags,
+                    entry.links,
+                    [
+                        data.Posting(self.cash_account, total_cash_flow, None, None, None, None),
+                        entry.postings[1],
+                        data.Posting(self.tax_account, -tax[2], None, None, None, None)
+                    ],
+                )
+                break
+
+            else:  # Withholding tax not found
+                raise Warning('Missing withholding tax for {} on {}'.format(security, date))
+
+        # All withholding taxes processed?
+        for tax in withholding_taxes:
+            if not tax[3]:
+                raise Warning('Unprocessed withholding tax for {} on {}'.format(tax[0], tax[1]))
+
+        return entries
+
+    def build_fifo_postings(
+            self,
+            entries,
+            transaction_id,
+            lot_date: datetime.date,
+            shares: amount.Amount,
+            proceeds: amount.Amount,
+            price: amount.Amount,
+            commission: amount.Amount
+    ) -> List[data.Posting]:
+        # Accounts
+        security = shares[1]
+        security_account = self.parent_account + ':' + security
+        pnl_account = self.income_account + ':' + security + ':PnL'
+
+        # Build inventory
+        processed_transactions: List = []
+        buys: List[Dict] = []
+        sells: List[Dict] = []
+        for entry in entries:
+            # It is a transaction
+            if not isinstance(entry, data.Transaction):
+                continue
+            entry: data.Transaction = entry
+
+            if 'trans_id' not in entry.meta:
+                continue
+            trans_id = entry.meta['trans_id']
+
+            # Up to given transaction
+            if trans_id >= transaction_id:
+                continue
+
+            # Avoid duplicate processing
+            if trans_id in processed_transactions:
+                continue
+            processed_transactions.append(trans_id)
+
+            # Find a trade with this commodity
+            for posting in entry.postings:
+                if posting.account == security_account:
+                    # Buy or sell?
+                    if posting.units[0] > 0:
+                        buys.append({
+                            'id': trans_id,
+                            'units': posting.units,
+                            'cost': posting.cost,
+                            'date': entry.date
+                        })
+                    else:
+                        sells.append({
+                            'id': trans_id,
+                            'units': posting.units,
+                            'cost': posting.cost,
+                            'date': entry.date
+                        })
+
+        # Sort and process sales
+        buys.sort(key=lambda x: x.get('date'))
+        sells.sort(key=lambda x: x.get('date'))
+        inventory = buys
+        for sell in sells:
+            inventory, _ = self.sell_from_lot(inventory, sell)
+
+        # Sell lot
+        inventory, sold_lots = self.sell_from_lot(
+            inventory,
+            {
+                'id': transaction_id,
+                'units': shares,
+                'cost': None,
+                'date': lot_date
+            })
+
+        # Calculate pnl
+        pnl_cash_flow = -proceeds[0]
+        for lot in sold_lots:
+            pnl_cash_flow += D(lot['cost'][0] * lot['units'][0])
+
+        # Build postings
+        totalProceeds = data.Amount(D(proceeds[0] + commission[0]), proceeds[1])
+        postings = [
+            data.Posting(self.cash_account, totalProceeds, None, None, None, None),
+            data.Posting(pnl_account, amount.Amount(D(pnl_cash_flow), proceeds[1]), None, None, None, None)
+        ]
+        if commission[0] != 0:
+            postings.append(data.Posting(self.fees_account, -commission, None, None, None, None))
+
+        for lot in sold_lots:
+            postings.append(data.Posting(security_account, -lot['units'], lot['cost'], price, None, None))
+
+        return postings
+
+    def sell_from_lot(self, inventory: List[Dict], sell_lot: Dict) -> (List[Dict], List[Dict]):
+        target_sell = sell_lot
+        security = sell_lot['units'][1]
+
+        # FIFO selling
+        sold_lots = []
+        for index, lot in enumerate(copy.deepcopy(inventory)):
+            # Difference between shares to be sold and shares in this lot
+            leftover = lot['units'][0] + sell_lot['units'][0]
+
+            # Exact units to cover the remaining units
+            if leftover == D(0):
+                # Add the entire lot to "sold lots"
+                sold_lots += [lot]
+
+                # Remove the lot from the inventory
+                inventory[index] = None
+
+                # Break signal
+                sell_lot = None
+                break
+
+            # More than enough units to cover the remaining units
+            if leftover > 0:
+                # Remaining units in this lot
+                inventory[index]['units'] = data.Amount(leftover, security)
+
+                # Sold units
+                lot['units'] = data.Amount(-sell_lot['units'][0], security)
+                sold_lots += [lot]
+
+                # Break signal
+                sell_lot = None
+                break
+
+            # Consume this lot and continue to the next one
+            else:
+                # Remove the lot from the inventory
+                inventory[index] = None
+
+                # Sold units
+                sold_lots += [lot]
+
+                # Reduce the target lot
+                sell_lot['units'] = data.Amount(sell_lot['units'][0] + lot['units'][0], security)
+
+        # Successful sale?
+        if sell_lot is not None:
+            logging.warning('Error selling {} from {}\nSold: {}'.format(target_sell, inventory, sold_lots))
+
+        return list(filter(None, inventory)), sold_lots
