@@ -79,10 +79,10 @@ def build_sell_postings(
 class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
     """An importer for FinPension CSV files."""
 
-    def __init__(self, regexps, parent_account, pnl_account, fees_account, securities):
+    def __init__(self, regexps, parent_account, income_account, fees_account, securities):
         identifier.IdentifyMixin.__init__(self, matchers=[("filename", regexps)])
         self.parent_account = parent_account
-        self.pnl_account = pnl_account
+        self.income_account = income_account
         self.fees_account = fees_account
         self.securities = securities
         self.valid_categories = [
@@ -131,7 +131,7 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                     meta,
                     book_date,
                     "*",
-                    "",
+                    "FinPension",
                     category,
                     data.EMPTY_SET,
                     data.EMPTY_SET,
@@ -146,7 +146,7 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                     meta,
                     book_date,
                     "*",
-                    "",
+                    "FinPension",
                     category,
                     data.EMPTY_SET,
                     data.EMPTY_SET,
@@ -156,17 +156,19 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                 ))
                 continue
             if category == "Dividend":
+                security = self.securities[row["ISIN"].strip()][0]
+                pnl_account = '{}:{}:Dividends'.format(self.income_account, security)
                 entries.append(data.Transaction(
                     meta,
                     book_date,
                     "*",
-                    self.securities[isin][0],
-                    category,
+                    "FinPension",
+                    'Dividends {}'.format(security),
                     data.EMPTY_SET,
                     data.EMPTY_SET,
                     [
                         data.Posting(self.parent_account + ':Cash', cashFlow, None, None, None, None),
-                        data.Posting(self.pnl_account, -cashFlow, None, None, None, None),
+                        data.Posting(pnl_account, -cashFlow, None, None, None, None),
                     ],
                 ))
                 continue
@@ -175,7 +177,7 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                     meta,
                     book_date,
                     "*",
-                    "",
+                    "FinPension",
                     category,
                     data.EMPTY_SET,
                     data.EMPTY_SET,
@@ -196,14 +198,14 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                 fxRate = None
                 # cost = position.CostSpec(D(-cashFlow[0]/shares[0]), D(-cashFlow[0]), currency, None, None, None)
                 # cost = position.CostSpec(D(-cashFlow[0] / shares[0]), None, currency, None, None, None)
-                cost = position.Cost(D(-cashFlow[0] / shares[0]), currency, None, None)
+                cost = position.Cost(D(-cashFlow[0] / shares[0]), currency, book_date, None)
             else:
                 fxRate = amount.Amount(fetch_cached_price(Source(), '{}-CHF'.format(currency), book_date)[0], currency)
                 number_total = D(-cashFlow[0] * fxRate[0])
                 number_per = D(number_total/shares[0])
                 # cost = position.CostSpec(number_per, number_total, currency, None, None, None)
                 # cost = position.CostSpec(number_per, None, currency, None, None, None)
-                cost = position.Cost(number_per, currency, None, None)
+                cost = position.Cost(number_per, currency, book_date, None)
 
             # Buy
             if category == "Buy":
@@ -211,8 +213,8 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                     meta,
                     book_date,
                     "*",
-                    "",
-                    category,
+                    "FinPension",
+                    'Buy {}'.format(security),
                     data.EMPTY_SET,
                     data.EMPTY_SET,
                     [
@@ -228,15 +230,15 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                     meta,
                     book_date,
                     "*",
-                    "",
-                    category,
+                    "FinPension",
+                    'Sell {}'.format(security),
                     data.EMPTY_SET,
                     data.EMPTY_SET,
                     build_sell_postings(
                         entries,
                         sec_account,
                         self.parent_account + ':Cash',
-                        self.pnl_account,
+                        '{}:{}:PnL'.format(self.income_account, security),
                         book_date,
                         shares,
                         cashFlow,
