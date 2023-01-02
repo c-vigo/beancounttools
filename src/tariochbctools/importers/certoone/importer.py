@@ -24,7 +24,7 @@ def parse_pdf_to_csv(pdf_file_name, csv_file_name):
     balance_date = None
     balance_amount = None
 
-    for table in tables:
+    for table in tables[0:-2]:
         df = table.df
 
         # skip incompatible tables
@@ -41,6 +41,7 @@ def parse_pdf_to_csv(pdf_file_name, csv_file_name):
                 credit.strip(),
                 debit.strip(),
             )
+            print(row)
 
             # Transaction entry
             try:
