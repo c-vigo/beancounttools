@@ -46,7 +46,7 @@ class TransactionType(Enum):
             return TransactionType.Removal
         elif ' - investment in loan' in desc:
             return TransactionType.Buy
-        elif 'interest received' in desc or ' - late fees received' in desc:
+        elif 'interest received' in desc or 'late fees received' in desc or 'delayed interest income' in desc:
             return TransactionType.Dividend
         elif 'principal received' in desc:
             return TransactionType.Sell
