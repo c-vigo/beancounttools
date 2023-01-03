@@ -1,7 +1,8 @@
 import csv
 import datetime
 from io import StringIO
-from typing import List
+from typing import List, Dict
+import copy
 
 from beancount.core import amount, data, position
 from beancount.core.number import D
@@ -20,12 +21,13 @@ def build_sell_postings(
         pnl_account: str,
         lot_date: datetime.date,
         shares: amount.Amount,
-        cash_flow: amount.Amount,
+        price: amount.Amount,
+        proceeds: amount.Amount,
         fx_rate: amount.Amount,
         currency: str
-):
-    lot = []
-    pnl_cash_flow = -cash_flow[0]
+) -> List[data.Posting]:
+    buys: List[Dict] = []
+    sells: List[Dict] = []
     for entry in entries:
         # It is a transaction
         if not isinstance(entry, data.Transaction):
@@ -39,41 +41,108 @@ def build_sell_postings(
         # Find this account
         for posting in entry.postings:
             if posting.account == sec_account:
-                lot.append({
-                    'units': posting.units,
-                    'cost': posting.cost,
-                    'date': entry.date
-                })
-                break
+                # Buy or sell?
+                if posting.units[0] > 0:
+                    buys.append({
+                        'units': posting.units,
+                        'cost': posting.cost,
+                        'date': entry.date
+                    })
+                else:
+                    sells.append({
+                        'units': posting.units,
+                        'cost': posting.cost,
+                        'date': entry.date
+                    })
+
+    # Sort and process sales
+    buys.sort(key=lambda x: x.get('date'))
+    sells.sort(key=lambda x: x.get('date'))
+    inventory = buys
+    for sell in sells:
+        inventory, _ = sell_from_lot(inventory, sell)
+
+    # Sell lot
+    inventory, sold_lots = sell_from_lot(
+        inventory,
+        {
+            'units': shares,
+            'cost': None,
+            'date': lot_date
+        })
+
+    # Calculate pnl
+    pnl_cash_flow = -proceeds[0]
+    share_currency = 'CHF'
+    if fx_rate is not None:
+        pnl_cash_flow = -proceeds[0]*fx_rate[0]
+        share_currency = fx_rate[1]
+        price = amount.Amount(D(price[0]*fx_rate[0]), fx_rate[1])
+    for lot in sold_lots:
+        pnl_cash_flow += D(lot['cost'][0] * lot['units'][0])
+
+    # Build postings
+    postings = [
+        data.Posting(cash_account, proceeds, None, fx_rate, None, None),
+        data.Posting(pnl_account, amount.Amount(D(pnl_cash_flow), share_currency), None, None, None, None)
+    ]
+
+    for lot in sold_lots:
+        postings.append(data.Posting(sec_account, -lot['units'], lot['cost'], price, None, None))
+
+    return postings
+
+def sell_from_lot(inventory: List[Dict], sell_lot: Dict) -> (List[Dict], List[Dict]):
+    target_sell = sell_lot
+    security = sell_lot['units'][1]
+
+    # FIFO selling
+    sold_lots = []
+    for index, lot in enumerate(copy.deepcopy(inventory)):
+        # Difference between shares to be sold and shares in this lot
+        leftover = lot['units'][0] + sell_lot['units'][0]
+
+        # Exact units to cover the remaining units
+        if leftover == D(0):
+            # Add the entire lot to "sold lots"
+            sold_lots += [lot]
+
+            # Remove the lot from the inventory
+            inventory[index] = None
+
+            # Break signal
+            sell_lot = None
+            break
+
+        # More than enough units to cover the remaining units
+        if leftover > 0:
+            # Remaining units in this lot
+            inventory[index]['units'] = data.Amount(leftover, security)
+
+            # Sold units
+            lot['units'] = data.Amount(-sell_lot['units'][0], security)
+            sold_lots += [lot]
+
+            # Break signal
+            sell_lot = None
+            break
+
+        # Consume this lot and continue to the next one
         else:
-            continue
+            # Remove the lot from the inventory
+            inventory[index] = None
 
-    # Sort by date and sell shares
-    postings: List[data.Posting] = [data.Posting(cash_account, cash_flow, None, fx_rate, None, None)]
-    lot = sorted(lot, key=lambda d: d['date'])
-    for batch in lot:
-        if batch['units'][0] + shares[0] >= 0:
-            # Enough shares in this batch to cover the remaining shares
-            # cost_per_share = batch['cost'][1] / batch['units'][0]
-            # cost = position.Cost(D(cost_per_share), currency, None, None)
-            postings.append(data.Posting(sec_account, shares, batch['cost'], None, None, None))
+            # Sold units
+            sold_lots += [lot]
 
-            # Update PnL
-            pnl_cash_flow = pnl_cash_flow - D(batch['cost'][0] * shares[0] / (fx_rate[0] if fx_rate is not None else 1))
-            postings.append(data.Posting(
-                pnl_account, amount.Amount(D(pnl_cash_flow), 'CHF'), None, fx_rate, None, None)
-            )
-            return postings
-        else:
-            # Consume this batch, reduce outstanding shares and continue
-            postings.append(data.Posting(sec_account, -batch['units'], batch['cost'], None, None, None))
-            shares = amount.Amount(D(shares[0] - batch['units'][0]), shares[1])
+            # Reduce the target lot
+            sell_lot['units'] = data.Amount(sell_lot['units'][0] + lot['units'][0], security)
 
-            # Update PnL
-            pnl_cash_flow = pnl_cash_flow + batch['cost'][0] / (fx_rate[0] if fx_rate is not None else 1)
+    # Successful sale?
+    if sell_lot is not None:
+        logging.warning('Error selling {} from {}\nSold: {}'.format(target_sell, inventory, sold_lots))
 
-    # If we reach here, we are trying to sell more shares than we had
-    raise Warning('Inventory mismatch for account {}'.format(sec_account))
+    return list(filter(None, inventory)), sold_lots
 
 
 class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
@@ -226,6 +295,7 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
 
             # Sell
             if category == "Sell":
+                price = amount.Amount(D(row["priceCHF"]), "CHF")
                 entries.append(data.Transaction(
                     meta,
                     book_date,
@@ -241,6 +311,7 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                         '{}:{}:PnL'.format(self.income_account, security),
                         book_date,
                         shares,
+                        price,
                         cashFlow,
                         fxRate,
                         currency
