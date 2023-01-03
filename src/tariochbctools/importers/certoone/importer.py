@@ -41,6 +41,7 @@ def parse_pdf_to_csv(pdf_file_name, csv_file_name):
                 credit.strip(),
                 debit.strip(),
             )
+            print(row)
 
             # Transaction entry
             try:
