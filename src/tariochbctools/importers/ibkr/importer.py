@@ -335,13 +335,7 @@ class CsvImporter(identifier.IdentifyMixin, importer.ImporterProtocol):
                     fx_orig = amount.Amount(D(row["Amount"]), row["Security"][:3])
                     fx_dest = amount.Amount(D(row["Proceeds"]), row["Security"][4:])
                     fx_rate = amount.Amount(D(row["TradePrice"]), row["Security"][4:])
-                    postings = [
-                            data.Posting(self.cash_account, fx_orig, None, fx_rate, None, None),
-                            data.Posting(self.cash_account, fx_dest, None, None, None, None),
-                    ]
-                    if commission[0] != 0:
-                        postings.append(data.Posting(self.cash_account, commission, None, None, None, None))
-                        postings.append(data.Posting(self.fees_account, -commission, None, None, None, None))
+
                     entries.append(data.Transaction(
                         meta,
                         book_date,
@@ -350,8 +344,38 @@ class CsvImporter(identifier.IdentifyMixin, importer.ImporterProtocol):
                         "FX Exchange {}".format(row["Security"]),
                         data.EMPTY_SET,
                         data.EMPTY_SET,
-                        postings
+                        [data.Posting(self.cash_account, fx_orig, None, fx_rate, None, None)]
                     ))
+
+                    entries.append(data.Transaction(
+                        meta,
+                        book_date,
+                        "*",
+                        "Interactive Brokers",
+                        "FX Exchange {}".format(row["Security"]),
+                        data.EMPTY_SET,
+                        data.EMPTY_SET,
+                        [data.Posting(self.cash_account, fx_dest, None, None, None, None)]
+                    ))
+
+                    if commission[0] != 0:
+                        meta = data.new_metadata(file.name, reader.line_num)
+                        meta['document'] = '{}-12-31-InteractiveBrokers_ActivityReport.pdf'.format(book_date.year)
+                        meta['trans_id'] = row['Id']
+                        entries.append(data.Transaction(
+                            meta,
+                            book_date,
+                            "*",
+                            "Interactive Brokers",
+                            "FX Exchange {}".format(row["Security"]),
+                            data.EMPTY_SET,
+                            data.EMPTY_SET,
+                            [
+                                data.Posting(self.cash_account, commission, None, None, None, None),
+                                data.Posting(self.fees_account, -commission, None, None, None, None)
+                            ]
+                        ))
+
 
                 # Trade: buy
                 elif category == 'BUY':
