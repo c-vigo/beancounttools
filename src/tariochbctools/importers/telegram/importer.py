@@ -37,7 +37,7 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
 
         for index, row in enumerate(reversed(rows)):
             try:
-                # Parse transaction
+                # Parse entry
                 meta = data.new_metadata(file.name, index)
                 book_date = parse(row['transaction_date'].strip()).date()
                 amt = amount.Amount(D(row["amount"]), row["currency"])
@@ -49,18 +49,29 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                 else:
                     tag = {tag[1:]}
 
-                entries.append(data.Transaction(
-                    meta,
-                    book_date,
-                    "*",
-                    payee,
-                    note,
-                    tag,
-                    data.EMPTY_SET,
-                    [
-                        data.Posting(self.account, amt, None, None, None, None),
-                    ],
-                ))
+                # Transaction or balance?
+                if payee == "Balance":
+                    entries.append(data.Balance(
+                        meta,
+                        book_date,
+                        self.account,
+                        amt,
+                        None,
+                        None
+                    ))
+                else:
+                    entries.append(data.Transaction(
+                        meta,
+                        book_date,
+                        "*",
+                        payee,
+                        note,
+                        tag,
+                        data.EMPTY_SET,
+                        [
+                            data.Posting(self.account, amt, None, None, None, None),
+                        ],
+                    ))
 
             except BaseException as e:
                 raise Warning('Error parsing line {}\n{}'.format(row, e))
