@@ -3,6 +3,8 @@ from datetime import datetime, timedelta
 from dateutil.parser import parse
 from pathlib import Path
 import csv
+# import matplotlib
+from pypdf import PdfReader
 
 import camelot
 from beancount.core import amount, data
@@ -17,14 +19,29 @@ def cleanDecimal(formatted_number):
 
 def parse_pdf_to_csv(pdf_file_name, csv_file_name):
     transactions = []
-    tables = camelot.read_pdf(
-        pdf_file_name, pages="2-end", flavor="stream", table_areas=["50,700,560,50"]
-    )
+
+    # get number of pages
+    reader = PdfReader(pdf_file_name)
+    n_pages = len(reader.pages)
+
+    # Read tables
+    try:
+        tables = camelot.read_pdf(
+            pdf_file_name, pages='2-{}'.format(n_pages-2), flavor="stream", table_areas=["50,700,560,90"]
+        )
+    except ValueError:
+        tables = camelot.read_pdf(
+            pdf_file_name, pages='2-{}'.format(n_pages-3), flavor="stream", table_areas=["50,700,560,90"]
+        )
+
+    # Visual debugging
+    # camelot.plot(tables[0], kind='text').show()
+    # camelot.plot(tables[0], kind='grid').show()
 
     balance_date = None
     balance_amount = None
 
-    for table in tables[0:-2]:
+    for table in tables:
         df = table.df
 
         # skip incompatible tables
