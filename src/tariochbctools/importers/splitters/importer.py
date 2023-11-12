@@ -41,29 +41,29 @@ class SplitserImporter(identifier.IdentifyMixin, importer.ImporterProtocol):
                     description = row["Concept"].strip()
                     cash_flow = amount.Amount(D(row["Value"]), row["Currency"].strip())
 
-                    # Balance entry?
-                    if payee == 'Balance':
+                    # Process entry
+                    entries.append(data.Transaction(
+                        meta,
+                        book_date,
+                        "*",
+                        payee,
+                        description,
+                        data.EMPTY_SET,
+                        data.EMPTY_SET,
+                        [data.Posting(self.account, cash_flow, None, None, None, None)],
+                    ))
+
+                    # Settlement?
+                    if description == 'Settle':
                         entries.append(data.Balance(
-                            meta,
+                            data.new_metadata(file.name, 0),
                             book_date + timedelta(days=1),
                             self.account,
-                            cash_flow,
+                            amount.Amount(D(0), row["Currency"].strip()),
                             None,
                             None
                         ))
 
-                    # Process entry
-                    else:
-                        entries.append(data.Transaction(
-                            meta,
-                            book_date,
-                            "*",
-                            payee,
-                            description,
-                            data.EMPTY_SET,
-                            data.EMPTY_SET,
-                            [data.Posting(self.account, cash_flow, None, None, None, None)],
-                        ))
 
                 except Exception as e:
                     logging.warning(e)
