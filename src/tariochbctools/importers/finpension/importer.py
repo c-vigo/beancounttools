@@ -190,10 +190,6 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
             cashFlow = amount.Amount(D(row["cashFlow"]), "CHF")
             category = row["category"].strip()
 
-            # Check category exists
-            if category not in self.valid_categories:
-                raise Warning('Unknown category {}'.format(category))
-
             # Fees, Deposits & Dividends
             if category == "Flat-rate administrative fee":
                 entries.append(data.Transaction(
@@ -209,8 +205,7 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                         data.Posting(self.fees_account, -cashFlow, None, None, None, None),
                     ],
                 ))
-                continue
-            if category == "Deposit":
+            elif category == "Deposit":
                 entries.append(data.Transaction(
                     meta,
                     book_date,
@@ -223,8 +218,7 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                         data.Posting(self.parent_account + ':Cash', cashFlow, None, None, None, None),
                     ],
                 ))
-                continue
-            if category == "Dividend":
+            elif category == "Dividend":
                 security = self.securities[row["ISIN"].strip()][0]
                 pnl_account = '{}:{}:Dividends'.format(self.income_account, security)
                 entries.append(data.Transaction(
@@ -240,8 +234,7 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                         data.Posting(pnl_account, -cashFlow, None, None, None, None),
                     ],
                 ))
-                continue
-            if category == "Transfer":
+            elif category == "Transfer":
                 entries.append(data.Transaction(
                     meta,
                     book_date,
@@ -254,74 +247,29 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                         data.Posting(self.parent_account + ':Cash', cashFlow, None, None, None, None),
                     ],
                 ))
-                continue
+            elif category in ['Buy', 'Sell']:
+                # This is a trade: buy or sell
+                isin = row["ISIN"].strip()
+                security = self.securities[isin][0]
+                shares = amount.Amount(D(row["shares"].strip()), security)
+                sec_account = self.parent_account + ":" + security
+                cost_spec = position.CostSpec(None, -cashFlow[0], 'CHF', None, None, None)
 
-            # This is a trade: buy or sell
-            isin = row["ISIN"].strip()
-            security = self.securities[isin][0]
-            currency = self.securities[isin][1]
-            shares = amount.Amount(D(row["shares"].strip()), security)
-            sec_account = self.parent_account + ":" + security
-
-            if currency == 'CHF':
-                fxRate = None
-                # cost = position.CostSpec(D(-cashFlow[0]/shares[0]), D(-cashFlow[0]), currency, None, None, None)
-                # cost = position.CostSpec(D(-cashFlow[0] / shares[0]), None, currency, None, None, None)
-                cost = position.Cost(D(-cashFlow[0] / shares[0]), currency, book_date, None)
-            else:
-                fxRate = amount.Amount(fetch_cached_price(Source(), '{}-CHF'.format(currency), book_date)[0], currency)
-                number_total = D(-cashFlow[0] * fxRate[0])
-                number_per = D(number_total/shares[0])
-                # cost = position.CostSpec(number_per, number_total, currency, None, None, None)
-                # cost = position.CostSpec(number_per, None, currency, None, None, None)
-                cost = position.Cost(number_per, currency, book_date, None)
-
-            # Buy
-            if category == "Buy":
                 entries.append(data.Transaction(
                     meta,
                     book_date,
                     "*",
                     "FinPension",
-                    'Buy {}'.format(security),
+                    '{} {}'.format(category, security),
                     data.EMPTY_SET,
                     data.EMPTY_SET,
                     [
-                        data.Posting(self.parent_account + ':Cash', cashFlow, None, fxRate, None, None),
-                        data.Posting(sec_account, shares, cost, None, None, None)
+                        data.Posting(self.parent_account + ':Cash', cashFlow, None, None, None, None),
+                        data.Posting(sec_account, shares, cost_spec, None, None, None)
                     ],
                 ))
-                continue
-
-            # Sell
-            if category == "Sell":
-                price = amount.Amount(D(row["priceCHF"]), "CHF")
-                entries.append(data.Transaction(
-                    meta,
-                    book_date,
-                    "*",
-                    "FinPension",
-                    'Sell {}'.format(security),
-                    data.EMPTY_SET,
-                    data.EMPTY_SET,
-                    build_sell_postings(
-                        entries,
-                        sec_account,
-                        self.parent_account + ':Cash',
-                        '{}:{}:PnL'.format(self.income_account, security),
-                        book_date,
-                        shares,
-                        price,
-                        cashFlow,
-                        fxRate,
-                        currency
-                    ),
-                ))
-                continue
-
-            # Should never reach here
-            raise Warning('Unknown category {}'.format(category))
-
+            else:
+                raise Warning('Unknown category {}'.format(category))
         return entries
 
 
