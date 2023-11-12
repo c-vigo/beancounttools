@@ -16,7 +16,7 @@ class Importer(importer.ImporterProtocol):
     """An importer for Nordigen API (e.g. for Revolut)."""
 
     def identify(self, file):
-        return "nordigen.yaml" == path.basename(file.name)
+        return path.basename(file.name).endswith("nordigen.yaml")
 
     def file_account(self, file):
         return ""
@@ -60,6 +60,10 @@ class Importer(importer.ImporterProtocol):
                 metakv = {
                     "nordref": trx["transactionId"],
                 }
+                if "creditorName" in trx:
+                    metakv["creditorName"] = trx["creditorName"]
+                if "debtorName" in trx:
+                    metakv["debtorName"] = trx["debtorName"]
                 if "currencyExchange" in trx:
                     instructedAmount = trx["currencyExchange"]["instructedAmount"]
                     metakv["original"] = (
@@ -67,12 +71,17 @@ class Importer(importer.ImporterProtocol):
                     )
                 meta = data.new_metadata("", 0, metakv)
                 trxDate = date.fromisoformat(trx["bookingDate"])
+                narration = ""
+                if "remittanceInformationUnstructured" in trx:
+                    narration += trx["remittanceInformationUnstructured"]
+                if "remittanceInformationUnstructuredArray" in trx:
+                    narration += " ".join(trx["remittanceInformationUnstructuredArray"])
                 entry = data.Transaction(
                     meta,
                     trxDate,
                     "*",
                     "",
-                    " ".join(trx["remittanceInformationUnstructuredArray"]),
+                    narration,
                     data.EMPTY_SET,
                     data.EMPTY_SET,
                     [

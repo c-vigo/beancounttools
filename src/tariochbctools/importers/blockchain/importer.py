@@ -13,7 +13,7 @@ class Importer(importer.ImporterProtocol):
     """An importer for Blockchain data."""
 
     def identify(self, file):
-        return "blockchain.yaml" == path.basename(file.name)
+        return path.basename(file.name).endswith("blockchain.yaml")
 
     def file_account(self, file):
         return ""
@@ -40,7 +40,7 @@ class Importer(importer.ImporterProtocol):
                 price = priceLookup.fetchPriceAmount(currency, date)
                 cost = data.Cost(price, baseCcy, None, None)
 
-                outputType = "eth" if currency.lower() == "eth" else "btc"
+                outputType = "ether" if currency.lower() == "eth" else "btc"
                 amt = blockcypher.from_base_unit(trx["value"], outputType)
 
                 entry = data.Transaction(

@@ -1,6 +1,8 @@
 import logging
 import datetime
 import re
+from datetime import date
+from decimal import Decimal
 from os import path
 from typing import List, Dict
 from collections import OrderedDict
@@ -31,12 +33,12 @@ class Importer(importer.ImporterProtocol):
     """An importer for Interactive Broker using the flex query service."""
 
     def identify(self, file):
-        return "ibkr.yaml" == path.basename(file.name)
+        return path.basename(file.name).endswith("ibkr.yaml")
 
     def file_account(self, file):
         return ""
 
-    def matches(self, trx, t):
+    def matches(self, trx, t, account):
         p = re.compile(r".* (?P<perShare>\d+\.?\d+) PER SHARE")
         trxPerShare = p.search(trx.description).group("perShare")
         tPerShare = p.search(t["description"]).group("perShare")
@@ -45,6 +47,7 @@ class Importer(importer.ImporterProtocol):
             t["date"] == trx.dateTime
             and t["symbol"] == trx.symbol
             and trxPerShare == tPerShare
+            and t["account"] == account
         )
 
     def extract(self, file, existing_entries):
@@ -59,122 +62,108 @@ class Importer(importer.ImporterProtocol):
         statement = parser.parse(response)
         assert isinstance(statement, Types.FlexQueryResponse)
 
-        transactions = []
-        for trx in statement.FlexStatements[0].CashTransactions:
-            existingEntry = None
-            if CashAction.DIVIDEND == trx.type or CashAction.WHTAX == trx.type:
-                existingEntry = next(
-                    (t for t in transactions if self.matches(trx, t)), None
-                )
-
-            if existingEntry:
-                if CashAction.WHTAX == trx.type:
-                    existingEntry["whAmount"] += trx.amount
-                else:
-                    existingEntry["amount"] += trx.amount
-                    existingEntry["description"] = trx.description
-                    existingEntry["type"] = trx.type
-            else:
-                if CashAction.WHTAX == trx.type:
-                    amount = 0
-                    whAmount = trx.amount
-                else:
-                    amount = trx.amount
-                    whAmount = 0
-
-                transactions.append(
-                    {
-                        "date": trx.dateTime,
-                        "symbol": trx.symbol,
-                        "currency": trx.currency,
-                        "amount": amount,
-                        "whAmount": whAmount,
-                        "description": trx.description,
-                        "type": trx.type,
-                    }
-                )
-
         result = []
-        for trx in transactions:
-            if trx["type"] == CashAction.DIVIDEND:
-                asset = trx["symbol"].rstrip("z")
-                payDate = trx["date"].date()
-                totalDividend = trx["amount"]
-                totalWithholding = -trx["whAmount"]
-                totalPayout = totalDividend - totalWithholding
-                currency = trx["currency"]
-
-                _, rows = query.run_query(
-                    existing_entries,
-                    options.OPTIONS_DEFAULTS,
-                    'select sum(number) as quantity, account where currency="'
-                    + asset
-                    + '" and date<#"'
-                    + str(payDate)
-                    + '" group by account;',
-                )
-                totalQuantity = D(0)
-                for row in rows:
-                    totalQuantity += row.quantity
-
-                remainingPayout = totalPayout
-                remainingWithholding = totalWithholding
-                for row in rows[:-1]:
-                    myAccount = row.account
-                    myQuantity = row.quantity
-
-                    myPayout = round(totalPayout * myQuantity / totalQuantity, 2)
-                    remainingPayout -= myPayout
-                    myWithholding = round(
-                        totalWithholding * myQuantity / totalQuantity, 2
+        for stmt in statement.FlexStatements:
+            transactions = []
+            account = stmt.accountId
+            for trx in stmt.Trades:
+                result.append(
+                    self.createBuy(
+                        trx.tradeDate,
+                        account,
+                        trx.symbol.rstrip("z"),
+                        trx.quantity,
+                        trx.currency,
+                        trx.tradePrice,
+                        amount.Amount(
+                            round(-trx.ibCommission, 2), trx.ibCommissionCurrency
+                        ),
+                        amount.Amount(round(trx.netCash, 2), trx.currency),
+                        config["baseCcy"],
+                        trx.fxRateToBase,
                     )
-                    remainingWithholding -= myWithholding
+                )
+
+            for trx in stmt.CashTransactions:
+                existingEntry = None
+                if CashAction.DIVIDEND == trx.type or CashAction.WHTAX == trx.type:
+                    existingEntry = next(
+                        (
+                            t
+                            for t in transactions
+                            if self.matches(trx, t, stmt.accountId)
+                        ),
+                        None,
+                    )
+
+                if existingEntry:
+                    if CashAction.WHTAX == trx.type:
+                        existingEntry["whAmount"] += trx.amount
+                    else:
+                        existingEntry["amount"] += trx.amount
+                        existingEntry["description"] = trx.description
+                        existingEntry["type"] = trx.type
+                else:
+                    if CashAction.WHTAX == trx.type:
+                        amt = 0
+                        whAmount = trx.amount
+                    else:
+                        amt = trx.amount
+                        whAmount = 0
+
+                    transactions.append(
+                        {
+                            "date": trx.dateTime,
+                            "symbol": trx.symbol,
+                            "currency": trx.currency,
+                            "amount": amt,
+                            "whAmount": whAmount,
+                            "description": trx.description,
+                            "type": trx.type,
+                            "account": account,
+                        }
+                    )
+
+            for trx in transactions:
+                if trx["type"] == CashAction.DIVIDEND:
+                    asset = trx["symbol"].rstrip("z")
+                    payDate = trx["date"].date()
+                    totalDividend = trx["amount"]
+                    totalWithholding = -trx["whAmount"]
+                    totalPayout = totalDividend - totalWithholding
+                    currency = trx["currency"]
+                    account = trx["account"]
+
                     result.append(
-                        self.createSingle(
-                            myPayout,
-                            myWithholding,
-                            myQuantity,
-                            myAccount,
+                        self.createDividen(
+                            totalPayout,
+                            totalWithholding,
                             asset,
                             currency,
                             payDate,
                             priceLookup,
                             trx["description"],
+                            account,
                         )
                     )
 
-                lastRow = rows[-1]
-                result.append(
-                    self.createSingle(
-                        remainingPayout,
-                        remainingWithholding,
-                        lastRow.quantity,
-                        lastRow.account,
-                        asset,
-                        currency,
-                        payDate,
-                        priceLookup,
-                        trx["description"],
-                    )
-                )
-
         return result
 
-    def createSingle(
+    def createDividen(
         self,
-        payout,
-        withholding,
-        quantity,
-        assetAccount,
-        asset,
-        currency,
-        date,
-        priceLookup,
-        description,
+        payout: Decimal,
+        withholding: Decimal,
+        asset: str,
+        currency: str,
+        date: date,
+        priceLookup: PriceLookup,
+        description: str,
+        account: str,
     ):
-        narration = "Dividend for " + str(quantity) + " : " + description
-        liquidityAccount = self.getLiquidityAccount(assetAccount, asset, currency)
-        incomeAccount = self.getIncomeAccount(assetAccount, asset)
+        narration = "Dividend: " + description
+        liquidityAccount = self.getLiquidityAccount(account, currency)
+        incomeAccount = self.getIncomeAccount(account)
+        assetAccount = self.getAssetAccount(account, asset)
 
         price = priceLookup.fetchPrice(currency, date)
 
@@ -192,7 +181,7 @@ class Importer(importer.ImporterProtocol):
             ),
         ]
         if withholding > 0:
-            receivableAccount = self.getReceivableAccount(assetAccount, asset)
+            receivableAccount = self.getReceivableAccount(account)
             postings.append(
                 data.Posting(
                     receivableAccount,
@@ -205,23 +194,76 @@ class Importer(importer.ImporterProtocol):
             )
         postings.append(data.Posting(incomeAccount, None, None, None, None, None))
 
-        meta = data.new_metadata("dividend", 0)
+        meta = data.new_metadata("dividend", 0, {"account": account})
         return data.Transaction(
             meta, date, "*", "", narration, data.EMPTY_SET, data.EMPTY_SET, postings
         )
 
-    def getLiquidityAccount(self, assetAccount, asset, currency):
-        return assetAccount.replace(":Investment:", ":Liquidity:").replace(
-            ":" + asset, ":" + currency
+    def createBuy(
+        self,
+        date: date,
+        account: str,
+        asset: str,
+        quantity: Decimal,
+        currency: str,
+        price: Decimal,
+        commission: amount.Amount,
+        netCash: amount.Amount,
+        baseCcy: str,
+        fxRateToBase: Decimal,
+    ):
+        narration = "Buy"
+        feeAccount = self.getFeeAccount(account)
+        liquidityAccount = self.getLiquidityAccount(account, currency)
+        assetAccount = self.getAssetAccount(account, asset)
+
+        liquidityPrice = None
+        if currency != baseCcy:
+            price = price * fxRateToBase
+            commission = amount.Amount(
+                round(commission.number * fxRateToBase, 2), baseCcy
+            )
+            liquidityPrice = amount.Amount(fxRateToBase, baseCcy)
+
+        postings = [
+            data.Posting(
+                assetAccount,
+                amount.Amount(quantity, asset),
+                data.Cost(price, baseCcy, None, None),
+                None,
+                None,
+                None,
+            ),
+            data.Posting(feeAccount, commission, None, None, None, None),
+            data.Posting(
+                liquidityAccount,
+                netCash,
+                None,
+                liquidityPrice,
+                None,
+                None,
+            ),
+        ]
+
+        meta = data.new_metadata("buy", 0, {"account": account})
+        return data.Transaction(
+            meta, date, "*", "", narration, data.EMPTY_SET, data.EMPTY_SET, postings
         )
 
-    def getReceivableAccount(self, assetAccount, asset):
-        parts = assetAccount.split(":")
-        return "Assets:" + parts[1] + ":Receivable:Verrechnungssteuer"
+    def getAssetAccount(self, account: str, asset: str):
+        return f"Assets:{account}:Investment:IB:{asset}"
 
-    def getIncomeAccount(self, assetAccount, asset):
-        parts = assetAccount.split(":")
-        return "Income:" + parts[1] + ":Interest"
+    def getLiquidityAccount(self, account: str, currency: str):
+        return f"Assets:{account}:Liquidity:IB:{currency}"
+
+    def getReceivableAccount(self, account: str):
+        return f"Assets:{account}:Receivable:Verrechnungssteuer"
+
+    def getIncomeAccount(self, account: str):
+        return f"Income:{account}:Interest"
+
+    def getFeeAccount(self, account: str):
+        return f"Expenses:{account}:Fees"
 
 
 class CsvImporter(identifier.IdentifyMixin, importer.ImporterProtocol):

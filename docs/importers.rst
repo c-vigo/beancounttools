@@ -9,7 +9,7 @@ Bitstamp
 
 Import transactions from `Bitstamp <https://www.bitstamp.com/>`__
 
-Create a file called bitstamp.yaml in your import location (e.g. downloads folder).
+Create a file called (or ending with) bitstamp.yaml in your import location (e.g. downloads folder).
 
 .. code-block:: yaml
 
@@ -55,14 +55,21 @@ Create a file called ``quickfile.yaml`` in your import location (e.g. download f
   account_number: "YOUR_ACCOUNT_NUMBER"
   api_key: YOUR_API_KEY
   app_id: YOUR_APP_ID
+  from_date: 2020-12-13
+  to_date: 2020-12-20
   accounts:
       1200: Assets:Other
       1201: Assets:Savings
   transaction_count: 200
 
+from_date and to_date are both optional
 
 To obtain an API key you must create an app in the `Account Settings | 3rd
 Party Integration | API` section of your account dashboard.
+
+The only permissions it needs to have is "Invoices.Bank_Search"
+
+your api_key is for your account, you can find it on "Settings - My Apps" or in the quickfile sandbox
 
 Accounts are indexed in the config by their ``nominal code`` (typically: ~1200)
 visible in each account's settings. Only accounts listed in the config will be
@@ -81,10 +88,26 @@ Import CSV from `Revolut <https://www.revolut.com/>`__
   CONFIG = [revolutimp.Importer("/Revolut-CHF.*\.csv", "Assets:Revolut:CHF", "CHF")]
 
 
-Transferwise
-------------
+Wise (formerly Transferwise)
+----------------------------
 
-Import from `Transferwise <https://www.transferwise.com/>`__ using their api
+Import from `Wise <https://www.wise.com/>`__ using their api.
+
+First, generate a personal API token by logging on and going to settings.
+Next, you need to generate a public/private key pair and then upload the public
+key part to your account. To generate the keys, execute (e.g. in your ``.ssh`` folder)
+
+.. code-block:: bash
+
+   openssl genrsa -out wise.pem
+   openssl rsa -pubout -in wise.pem -out wise_public.pem
+   openssl pkey -in wise.pem -traditional > wise_traditional.pem
+
+The final command makes a traditional private key for compatibility with the python rsa library. This may stop being necessary at some point. See `this page https://github.com/sybrenstuvel/python-rsa/issues/80` for details.
+
+Now upload the *public* key part to your Wise account.
+
+You can then create an import config for beancount, or add Wise to your existing one.
 
 .. code-block:: python
 
@@ -92,13 +115,27 @@ Import from `Transferwise <https://www.transferwise.com/>`__ using their api
 
   CONFIG = [twimp.Importer()]
 
-Create a file called transferwise.yaml in your import location (e.g. download folder).
+Create a file called (or ending with) transferwise.yaml in your import location (e.g. download folder).
 
 .. code-block:: yaml
 
   token: <your api token>
   baseAccount: <Assets:Transferwise:>
+  privateKeyPath: /path/to/wise_traditional.pem
 
+
+Optionally, you can provide a dictionary of account names mapped by currency. In this case
+you must provide a name for every currency in your Wise account, otherwise the import will
+fail.
+
+
+.. code-block:: yaml
+
+  token: <your api token>
+  baseAccount:
+    SEK: "Assets:MySwedishWiseAccount"
+    GBP: "Assets:MyUKWiseAccount"
+  privateKeyPath: /path/to/wise_traditional.pem
 
 TrueLayer
 ---------
@@ -112,7 +149,7 @@ You need to create a dev account and see their documentation about how to get a 
 
   CONFIG = [tlimp.Importer()]
 
-Create a file called truelayer.yaml in your import location (e.g. download folder).
+Create a file called (or ending with) truelayer.yaml in your import location (e.g. download folder).
 
 .. code-block:: yaml
 
@@ -156,7 +193,7 @@ all be listed in the end.
 
   CONFIG = [nordimp.Importer()]
 
-Create a file called nordigen.yaml in your import location (e.g. download folder).
+Create a file called (or ending with) nordigen.yaml in your import location (e.g. download folder).
 
 .. code-block:: yaml
 
@@ -183,9 +220,9 @@ Import mt940 from `Zürcher Kantonalbank <https://www.zkb.ch/>`__
 Interactivebrokers
 ------------------
 
-Import dividends from `Interactive Brokers <https://www.interactivebrokers.com/>`__
+Import dividends and buys from `Interactive Brokers <https://www.interactivebrokers.com/>`__
 
-Create a file called ibkr.yaml in your import location (e.g. downloads folder).
+Create a file called (or ending with) ibkr.yaml in your import location (e.g. downloads folder).
 
 .. code-block:: yaml
 
@@ -223,7 +260,7 @@ Schedule
 
 Generate scheduled transactions.
 
-Define a file called schedule.yaml in your import location (e.g. downloads folder). That describes the schedule transactions. They will be added each month at the end of the month.
+Define a file called (or ending with) schedule.yaml in your import location (e.g. downloads folder). That describes the schedule transactions. They will be added each month at the end of the month.
 
 .. code-block:: yaml
 
@@ -262,7 +299,7 @@ Blockchain
 
 Import transactions from Blockchain
 
-Create a file called blockchain.yaml in your import location (e.g. downloads folder).
+Create a file called (or ending with) blockchain.yaml in your import location (e.g. downloads folder).
 
 
 .. code-block:: yaml
@@ -336,3 +373,25 @@ Import PDF from `Viseca One <https://one-digitalservice.ch/>`__
   from tariochbctools.importers.viseca import importer as visecaimp
 
   CONFIG = [visecaimp.Importer(r"Kontoauszug.*\.pdf", "Assets:Viseca:CHF")]
+
+BCGE
+----
+
+Import mt940 from `BCGE <https://www.bcge.ch/>`__
+
+.. code-block:: python
+
+  from tariochbctools.importers.bcge import importer as bcge
+
+  CONFIG = [bcge.BCGEImporter("/\d+\.mt940", "Assets:BCGE")]
+
+Swisscard cards
+---------------
+
+Import Swisscard's `Cashback Cards <https://www.cashback-cards.ch/>` transactions from a CSV export.__
+
+.. code-block:: python
+
+  from tariochbctools.importers.swisscard import importer as swisscard
+
+  CONFIG = [swisscard.SwisscardImporter("swisscard/.*\.csv", "Liabilities:Cashback")]

@@ -35,14 +35,14 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                 [
                     "Type",
                     "Product",
-                    "StartedDate",
-                    "CompletedDate",
+                    "Started Date",
+                    "Completed Date",
                     "Description",
                     "Amount",
                     "Fee",
                     "Currency",
                     "State",
-                    "Balance"
+                    "Balance",
                 ],
                 delimiter=",",
                 skipinitialspace=True,

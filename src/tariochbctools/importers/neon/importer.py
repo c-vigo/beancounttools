@@ -40,6 +40,15 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                 meta = data.new_metadata(file.name, index)
                 book_date = parse(row['Date'].strip()).date()
                 amt = amount.Amount(D(row["Amount"]), "CHF")
+                metakv = {
+                    "category": row["Category"],
+                }
+                if row["Original currency"] != "":
+                    metakv["original_currency"] = row["Original currency"]
+                    metakv["original_amount"] = row["Original amount"]
+                    metakv["exchange_rate"] = row["Exchange rate"]
+
+                meta = data.new_metadata(file.name, 0, metakv)
                 description = row["Description"].strip()
                 if description in self.map:
                     payee = self.map[description][0]
