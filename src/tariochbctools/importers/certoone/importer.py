@@ -42,17 +42,24 @@ def parse_pdf_to_csv(pdf_file_name, csv_file_name):
     balance_amount = None
 
     for table in tables:
-        df = table.df
+        for index, row in table.df.iterrows():
+            if len(tuple(row)) == 5:
+                _, book_date, text, credit, debit = tuple(row)
+            elif len(tuple(row)) == 4:
+                book_date, text, credit, debit = tuple(row)
+            else:
+                # Balance in a separate table
+                text, value = tuple(row)
+                balance_date = re.search(
+                    r"Saldo per (\d\d\.\d\d\.\d\d\d\d) zu unseren Gunsten CHF", text
+                ).group(1)
+                balance_date = datetime.strptime(balance_date, "%d.%m.%Y").date()
+                # add 1 day: cembra provides balance at EOD, but beancount checks it at SOD
+                balance_date = balance_date + timedelta(days=1)
+                balance_amount = cleanDecimal(value)
+                continue
 
-        # skip incompatible tables
-        if df.columns.size != 5:
-            continue
-
-        for index, row in df.iterrows():
-
-            trx_date, book_date, text, credit, debit = tuple(row)
-            trx_date, book_date, text, credit, debit = (
-                trx_date.strip(),
+            book_date, text, credit, debit = (
                 book_date.strip(),
                 text.strip(),
                 credit.strip(),
@@ -67,8 +74,7 @@ def parse_pdf_to_csv(pdf_file_name, csv_file_name):
 
             if book_date:
                 value = - cleanDecimal(debit) if debit else cleanDecimal(credit)
-                if amount:
-                    transactions.append([book_date, value, text])
+                transactions.append([book_date, value, text])
                 continue
 
             # Balance entry
@@ -79,11 +85,10 @@ def parse_pdf_to_csv(pdf_file_name, csv_file_name):
                 balance_date = datetime.strptime(balance_date, "%d.%m.%Y").date()
                 # add 1 day: cembra provides balance at EOD, but beancount checks it at SOD
                 balance_date = balance_date + timedelta(days=1)
+                balance_amount = cleanDecimal(debit) if debit else - cleanDecimal(credit)
             except Exception:
                 pass
 
-            if balance_date:
-                balance_amount = cleanDecimal(debit) if debit else - cleanDecimal(credit)
 
     # Write to CSV file
     with open(csv_file_name, 'wt') as f:
