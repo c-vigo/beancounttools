@@ -51,7 +51,7 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
             for row in reader:
                 try:
                     meta = data.new_metadata(file.name, reader.line_num)
-                    book_date = parse(row['StartedDate'].strip()).date()
+                    book_date = parse(row['Started Date'].strip()).date()
                     description = row["Type"].strip() + ' ' + row["Description"].strip()
                     cash_flow = amount.Amount(D(row["Amount"]) - D(row["Fee"]), row["Currency"])
                     if cash_flow[0] == D(0):
