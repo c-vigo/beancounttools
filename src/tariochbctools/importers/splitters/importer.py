@@ -77,16 +77,13 @@ class SplitserImporter(identifier.IdentifyMixin, importer.ImporterProtocol):
 
 class HouseHoldSplitWiseImporter(identifier.IdentifyMixin, importer.ImporterProtocol):
     """An importer for SplitWise CSV files."""
-
-    def __init__(self, regexps, account, owner: str, partner: str, account_map: dict = None):
+    def __init__(self, regexps, account, owner: str, partner: str, account_map: dict = None, tag: str = None):
         identifier.IdentifyMixin.__init__(self, matchers=[("filename", regexps)])
         self.account = account
         self.owner = owner
         self.partner = partner
-        if account_map is not None:
-            self.account_map = account_map
-        else:
-            self.account_map = dict()
+        self.account_map = account_map if account_map is not None else dict()
+        self.tag = {tag} if tag is not None else data.EMPTY_SET
 
     def name(self):
         return super().name() + self.account
@@ -122,49 +119,66 @@ class HouseHoldSplitWiseImporter(identifier.IdentifyMixin, importer.ImporterProt
         logging.debug('SplitWise Importer: partner found in pos. {} - {}'.format(idx_partner, people[idx_partner]))
 
         # Loop over transactions
-        for row in rows[2:-3]:
+        for index, row in enumerate(rows[2:]):
             # Split fields
-            if idx_owner > idx_partner:
-                date, description, category, cost, currency, _, value = tuple(row)
-            else:
-                date, description, category, cost, currency, value, _ = tuple(row)
+            try:
+                if idx_owner > idx_partner:
+                    date, description, category, cost, currency, _, value = tuple(row)
+                else:
+                    date, description, category, cost, currency, value, _ = tuple(row)
+            except ValueError:
+                continue
 
-            # Parse fields
+            # Parse date
             date = datetime.strptime(date, "%Y-%m-%d").date()
-            cost = clean_decimal(cost)
-            value = clean_decimal(value)
 
-            # Identify account from map
-            exp_account = self.account_map.get(category, 'Expenses:FIXME')
-
-            # Case 1: (partially)) paid by owner
-            if value > 0:
-                entries.append(data.Transaction(
-                    data.new_metadata(file.name, 0, {'category': category}),
+            # Balance?
+            if description == 'Total balance':
+                entries.append(data.Balance(
+                    data.new_metadata(file.name, index),
                     date,
-                    "*",
-                    self.owner,
-                    description,
-                    data.EMPTY_SET,
-                    data.EMPTY_SET,
-                    [
-                        data.Posting(self.account, amount.Amount(value, currency), None, None, None, None),
-                        data.Posting(exp_account, amount.Amount(cost - value, currency), None, None, None, None)
-                    ],
+                    self.account,
+                    amount.Amount(clean_decimal(value), currency),
+                    None,
+                    None
                 ))
+
             else:
-                entries.append(data.Transaction(
-                    data.new_metadata(file.name, 0, {'category': category}),
-                    date,
-                    "*",
-                    self.partner,
-                    description,
-                    data.EMPTY_SET,
-                    data.EMPTY_SET,
-                    [
-                        data.Posting(self.account, amount.Amount(-cost - value, currency), None, None, None, None),
-                        data.Posting(exp_account, amount.Amount(-value, currency), None, None, None, None)
-                    ],
-                ))
+                # Parse fields
+                cost = clean_decimal(cost)
+                value = clean_decimal(value)
+
+                # Identify account from map
+                exp_account = self.account_map.get(category, 'Expenses:FIXME')
+
+                # Case 1: (partially) paid by owner
+                if value > 0:
+                    entries.append(data.Transaction(
+                        data.new_metadata(file.name, index, {'category': category}),
+                        date,
+                        "*",
+                        self.owner,
+                        description,
+                        self.tag,
+                        data.EMPTY_SET,
+                        [
+                            data.Posting(self.account, amount.Amount(value, currency), None, None, None, None),
+                            data.Posting(exp_account, amount.Amount(cost - value, currency), None, None, None, None)
+                        ],
+                    ))
+                else:
+                    entries.append(data.Transaction(
+                        data.new_metadata(file.name, index, {'category': category}),
+                        date,
+                        "*",
+                        self.partner,
+                        description,
+                        self.tag,
+                        data.EMPTY_SET,
+                        [
+                            data.Posting(self.account, amount.Amount(value, currency), None, None, None, None),
+                            data.Posting(exp_account, amount.Amount(-value, currency), None, None, None, None)
+                        ],
+                    ))
 
         return entries
