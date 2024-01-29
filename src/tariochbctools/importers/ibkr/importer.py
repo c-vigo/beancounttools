@@ -7,6 +7,7 @@ from os import path
 from typing import List, Dict
 from collections import OrderedDict
 import copy
+import itertools
 
 import yaml
 from beancount.core import amount, data, position
@@ -356,7 +357,8 @@ class CsvImporter(identifier.IdentifyMixin, importer.ImporterProtocol):
                         security,
                         book_date,
                         cashFlow,
-                        False
+                        False,
+                        meta
                     ])
 
                 # Interests
@@ -401,7 +403,6 @@ class CsvImporter(identifier.IdentifyMixin, importer.ImporterProtocol):
                         data.EMPTY_SET,
                         postings
                     ))
-
 
                 # Trade: buy
                 elif category == 'BUY':
@@ -512,9 +513,70 @@ class CsvImporter(identifier.IdentifyMixin, importer.ImporterProtocol):
                 raise Warning('Missing withholding tax for {} on {}'.format(security, date))
 
         # All withholding taxes processed?
+        unmatched_withholding_taxes = []
         for tax in withholding_taxes:
             if not tax[3]:
-                raise Warning('Unprocessed withholding tax for {} on {}'.format(tax[0], tax[1]))
+                unmatched_withholding_taxes.append(tax)
+        
+        # Withholding tax re-calculations
+        indexes = []
+        for index, tax in enumerate(unmatched_withholding_taxes):
+            # Check for tax re-imbursement
+            if tax[2][0] > 0:
+                # Find tax re-calculations on same date
+                for index2, match_tax in enumerate(unmatched_withholding_taxes):
+                    if match_tax[0:1] == tax[0:1] and match_tax[2][0] < 0:
+                        # Find original dividend
+                        for entry in itertools.chain(entries, existing_entries):
+                            # It is a transaction
+                            if not isinstance(entry, data.Transaction):
+                                continue
+                            entry: data.Transaction = entry
+
+                            # It is a dividend transaction
+                            if "Dividends" not in entry.narration:
+                                continue
+
+                            # It is the same security
+                            security = entry.narration.replace('Dividends ', '')
+                            if security != tax[0]:
+                                continue
+                            dividend_account = self.income_account + ':' + security + ':Dividends'
+
+                            # It is the same value, opposite sign
+                            value = None
+                            for posting in entry.postings:
+                                if posting.account == self.tax_account:
+                                    value = posting.units
+                            if value != tax[2]:
+                                continue
+
+                            # We got a match! Get date of original dividend payout
+                            date = entry.date
+                            indexes.append(index)
+                            indexes.append(index2)
+                            cash_balance = amount.Amount(tax[2][0] + match_tax[2][0], tax[2][1])
+
+                            entries.append(data.Transaction(
+                                tax[4],
+                                tax[1],
+                                "*",
+                                "Interactive Brokers",
+                                "Dividends {}".format(security),
+                                data.EMPTY_SET,
+                                data.EMPTY_SET,
+                                [
+                                    data.Posting(self.cash_account, cash_balance, None, None, None, None),
+                                    data.Posting(dividend_account, amount.Amount(D(0), tax[2][1]), None, None, None, None),
+                                    data.Posting(self.tax_account, -cash_balance, None, None, None, {'effective_date': '{}'.format(date)})
+                                ],
+                            ))
+
+        # Unmatched withholding taxes?
+        for index, tax in enumerate(unmatched_withholding_taxes):
+            if index not in indexes:
+                logging.warning('Unmatched withholding tax for {} on {}, value {}'.format(tax[0], tax[1], tax[2]))
+
 
         return entries
 
