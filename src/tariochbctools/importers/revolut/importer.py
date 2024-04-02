@@ -57,6 +57,9 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                     if cash_flow[0] == D(0):
                         continue
 
+                    if row['State'].strip() != 'COMPLETED':
+                        continue
+
                     # Process entry
                     entry = data.Transaction(
                         meta,
