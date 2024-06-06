@@ -48,7 +48,7 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                     metakv["original_amount"] = row["Original amount"]
                     metakv["exchange_rate"] = row["Exchange rate"]
 
-                meta = data.new_metadata(file.name, 0, metakv)
+                meta_posting = data.new_metadata(file.name, 0, metakv)
                 description = row["Description"].strip()
                 if description in self.map:
                     payee = self.map[description][0]
@@ -66,7 +66,7 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                     data.EMPTY_SET,
                     data.EMPTY_SET,
                     [
-                        data.Posting(self.account, amt, None, None, None, None),
+                        data.Posting(self.account, amt, None, None, None, meta_posting),
                     ],
                 ))
 
