@@ -55,7 +55,7 @@ def parse_pdf_to_csv(pdf_file_name, csv_file_name):
             )
             last_table = camelot.read_pdf(
                 pdf_file_name,
-                pages='end',
+                pages='{}'.format(n_pages),
                 flavor="stream",
                 table_areas=table_areas,
                 columns=['470']
