@@ -101,12 +101,19 @@ def parse_pdf_to_csv(pdf_file_name, csv_file_name):
     for order in orders:
         # Parse fields
         description = order[0].translate(special_char_map)
-        cost = amount.Amount(D(order[1].split()[0]), order[1].split()[1])
         traveller = order[2].replace('Traveller: ', '')
         travel_date = datetime.strptime(order[3], "Travel date: %d.%m.%Y").date()
         delivery_address = order[4].replace('Delivery address: ', '')
         order_date = datetime.strptime(order[5], "Order date: %d.%m.%Y").date()
         order_num = int(order[7].replace('Order no.: ', ''))
+        
+        # Cost: deal with refunds
+        if 'Refunded' in order[1]:
+            cost = order[1].replace('Refunded ', '')
+            cost = amount.Amount(-D(cost.split()[0]), cost.split()[1])
+            description = 'Refund of {}'.format(description)
+        else:
+            cost = amount.Amount(D(order[1].split()[0]), order[1].split()[1])
 
         transactions.append([
             order_date,
