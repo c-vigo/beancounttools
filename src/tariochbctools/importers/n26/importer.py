@@ -28,14 +28,16 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
             reader = csv.DictReader(
                 csvfile,
                 [
-                    "Date",
-                    "Payee",
-                    "Account number",
-                    "Transaction type",
-                    "Payment reference",
+                    "Booking Date",
+                    "Value Date",
+                    "Partner Name",
+                    "Partner Iban",
+                    "Type",
+                    "Payment Reference",
+                    "Account Name",
                     "Amount (EUR)",
-                    "Amount (Foreign Currency)",
-                    "Type Foreign Currency",
+                    "Original Amount",
+                    "Original Currency",
                     "Exchange Rate"
                 ],
                 delimiter=","
@@ -46,15 +48,19 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
             try:
                 # Parse transaction
                 meta = data.new_metadata(file.name, index)
-                book_date = parse(row['Date'].strip()).date()
-                payee = row["Payee"].strip()
-                description = row["Payment reference"].strip()
-                amt_eur = amount.Amount(D(row["Amount (EUR)"]), "EUR")
+                book_date = parse(row['Booking Date'].strip()).date()
+                payee = row["Partner Name"].strip()
+                description = row["Payment Reference"].strip() if row["Payment Reference"] else ""
+                units = amount.Amount(D(row["Amount (EUR)"]), "EUR")
+                cost = None
 
-                foreign_currency = row["Type Foreign Currency"]
-                cost_spec = None
-                if foreign_currency and foreign_currency != "EUR":
-                    cost_spec = position.CostSpec(None, D(row["Amount (Foreign Currency)"]), foreign_currency, None, None, None)
+                #original_currency = row["Original Currency"]
+                #if original_currency and original_currency != "EUR":
+                #    units = amount.Amount(D(row["Original Amount"]), original_currency)
+                #    cost = position.Cost(D(row["Amount (EUR)"]), 'EUR', None, None)
+                #else:
+                #    units = amount.Amount(D(row["Amount (EUR)"]), "EUR")
+                #    cost = None
 
                 entries.append(data.Transaction(
                     meta,
@@ -65,7 +71,7 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                     data.EMPTY_SET,
                     data.EMPTY_SET,
                     [
-                        data.Posting(self.account, amt_eur, cost_spec, None, None, None),
+                        data.Posting(self.account, units, cost, None, None, None),
                     ],
                 ))
 
