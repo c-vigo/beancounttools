@@ -351,6 +351,21 @@ class CsvImporter(identifier.IdentifyMixin, importer.ImporterProtocol):
                         ],
                     ))
 
+                # Other fees, e.g. referral bonus
+                elif category == 'Other Fees':
+                    entries.append(data.Transaction(
+                        meta,
+                        book_date,
+                        "*",
+                        "Interactive Brokers",
+                        "Other",
+                        data.EMPTY_SET,
+                        data.EMPTY_SET,
+                        [
+                            data.Posting(self.cash_account, cashFlow, None, None, None, None),
+                        ],
+                    ))
+
                 # Withholding tax
                 elif category == 'Withholding Tax':
                     withholding_taxes.append([
