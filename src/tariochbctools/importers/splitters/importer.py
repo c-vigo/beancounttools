@@ -256,23 +256,19 @@ class TripSplitWiseImporter(identifier.IdentifyMixin, importer.ImporterProtocol)
                 # Case 1: no liability for anyone, fully paid by owner and just tracked here
                 if all_zeroes:
                     continue
-                    entries.append(data.Transaction(
-                        data.new_metadata(file.name, index, {'category': category}),
-                        date,
-                        "*",
-                        self.owner,
-                        description,
-                        self.tag,
-                        data.EMPTY_SET,
-                        [
-                            data.Posting(self.expenses_account, amount.Amount(cost, currency), None, None, None, None)
-                        ],
-                    ))
                 # Case 2: owner not ivolved, paid and owed by others
                 elif owner_balance  == D(0) and others_balance == D(0):
                     continue
                 # Case 3: negative balance for owner
                 elif owner_balance < D(0):
+                    # Build postings
+                    postings = [
+                        data.Posting(self.account, amount.Amount(owner_balance, currency), None, None, None, None),
+                    ]
+                    if self.expenses_account is not None:
+                        postings.append(data.Posting(self.expenses_account, amount.Amount(-owner_balance, currency), None, None, None, None))
+                    
+                    # Append transaction
                     entries.append(data.Transaction(
                         data.new_metadata(file.name, index, {'category': category}),
                         date,
@@ -281,13 +277,18 @@ class TripSplitWiseImporter(identifier.IdentifyMixin, importer.ImporterProtocol)
                         description,
                         self.tag,
                         data.EMPTY_SET,
-                        [
-                            data.Posting(self.account, amount.Amount(owner_balance, currency), None, None, None, None),
-                            data.Posting(self.expenses_account, amount.Amount(-owner_balance, currency), None, None, None, None)
-                        ],
+                        postings,
                     ))
                 # Case 4: positive balance for owner
                 else:
+                    # Build postings
+                    postings = [
+                        data.Posting(self.account, amount.Amount(owner_balance, currency), None, None, None, None),
+                    ]
+                    if self.expenses_account is not None:
+                        postings.append(data.Posting(self.expenses_account, amount.Amount(-owner_balance, currency), None, None, None, None))
+                    
+                    # Append transaction
                     entries.append(data.Transaction(
                         data.new_metadata(file.name, index, {'category': category}),
                         date,
@@ -296,10 +297,7 @@ class TripSplitWiseImporter(identifier.IdentifyMixin, importer.ImporterProtocol)
                         description,
                         self.tag,
                         data.EMPTY_SET,
-                        [
-                            data.Posting(self.account, amount.Amount(owner_balance, currency), None, None, None, None),
-                            data.Posting(self.expenses_account, amount.Amount(cost-owner_balance, currency), None, None, None, None)
-                        ],
+                        postings,
                     ))
 
         return entries
