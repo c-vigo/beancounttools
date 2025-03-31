@@ -3,15 +3,13 @@ import datetime
 from io import StringIO
 from typing import List, Dict
 import copy
+import logging
 
 from beancount.core import amount, data, position
 from beancount.core.number import D
 from beancount.ingest import importer
 from beancount.ingest.importers.mixins import identifier
 from dateutil.parser import parse
-
-from beanprice.price import fetch_cached_price
-from beanprice.sources.ratesapi import Source
 
 
 def build_sell_postings(
@@ -32,7 +30,7 @@ def build_sell_postings(
         # It is a transaction
         if not isinstance(entry, data.Transaction):
             continue
-        entry: data.Transaction = entry
+        entry = entry
 
         # Up to given date
         if entry.date > lot_date:
@@ -92,7 +90,7 @@ def build_sell_postings(
 
     return postings
 
-def sell_from_lot(inventory: List[Dict], sell_lot: Dict) -> (List[Dict], List[Dict]):
+def sell_from_lot(inventory: List[Dict], sell_lot: Dict) -> tuple[List[Dict], List[Dict]]:
     target_sell = sell_lot
     security = sell_lot['units'][1]
 
@@ -154,14 +152,6 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
         self.income_account = income_account
         self.fees_account = fees_account
         self.securities = securities
-        self.valid_categories = [
-            'Buy',
-            'Sell',
-            'Flat-rate administrative fee',
-            'Deposit',
-            'Dividend',
-            'Transfer'
-        ]
 
     def name(self):
         return super().name() + self.parent_account
@@ -218,6 +208,21 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
                         data.Posting(self.parent_account + ':Cash', cashFlow, None, None, None, None),
                     ],
                 ))
+            elif category == "Interests":
+                interests_account = '{}:Interests'.format(self.income_account)
+                entries.append(data.Transaction(
+                    meta,
+                    book_date,
+                    "*",
+                    "FinPension",
+                    category,
+                    data.EMPTY_SET,
+                    data.EMPTY_SET,
+                    [
+                        data.Posting(self.parent_account + ':Cash', cashFlow, None, None, None, None),
+                        data.Posting(interests_account, -cashFlow, None, None, None, None),
+                    ],
+                ))
             elif category == "Dividend":
                 security = self.securities[row["ISIN"].strip()][0]
                 pnl_account = '{}:{}:Dividends'.format(self.income_account, security)
@@ -271,5 +276,3 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
             else:
                 raise Warning('Unknown category {}'.format(category))
         return entries
-
-
