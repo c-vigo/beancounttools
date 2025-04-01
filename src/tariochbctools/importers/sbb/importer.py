@@ -12,7 +12,7 @@ from beancount.ingest import importer
 from beancount.ingest.importers.mixins import identifier
 
 
-def parse_pdf_to_csv(pdf_file_name, csv_file_name):
+def parse_pdf_to_csv(pdf_file_name, csv_file_name, owner: str):
     # get number of pages
     reader = PdfReader(pdf_file_name)
     n_pages = len(reader.pages)
@@ -107,20 +107,21 @@ def parse_pdf_to_csv(pdf_file_name, csv_file_name):
         order_date = datetime.strptime(order[5], "Order date: %d.%m.%Y").date()
         order_num = int(order[7].replace('Order no.: ', ''))
         
-        # Cost: deal with refunds
+        # Refund?
         if 'Refunded' in order[1]:
-            cost = order[1].replace('Refunded ', '')
-            cost = amount.Amount(-D(cost.split()[0]), cost.split()[1])
-            description = 'Refund of {}'.format(description)
-        else:
-            cost = amount.Amount(D(order[1].split()[0]), order[1].split()[1])
+            continue
 
+        # Paid for other travellers?
+        if traveller != owner:
+            continue
+
+        # Append transaction
         transactions.append([
             order_date,
             travel_date,
             description,
-            cost[0],
-            cost[1],
+            D(order[1].split()[0]),
+            order[1].split()[1],
             traveller,
             delivery_address,
             order_num
@@ -139,9 +140,10 @@ def parse_pdf_to_csv(pdf_file_name, csv_file_name):
 class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
     """An importer for SBB Order Summary PDF files."""
 
-    def __init__(self, regexps, account):
+    def __init__(self, regexps, account: str, owner: str):
         identifier.IdentifyMixin.__init__(self, matchers=[("filename", regexps)])
         self.account = account
+        self.owner = owner
 
     def file_account(self, file):
         return self.account
@@ -150,7 +152,7 @@ class Importer(identifier.IdentifyMixin, importer.ImporterProtocol):
         # Parse the PDF to a CSV file
         csv_file = Path(file.name).with_suffix('.csv')
         if not csv_file.is_file():
-            parse_pdf_to_csv(file.name, str(csv_file))
+            parse_pdf_to_csv(file.name, str(csv_file), self.owner)
 
         # Read the CSV file
         with open(str(csv_file), 'r') as csvfile:
